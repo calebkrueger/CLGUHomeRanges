@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 4-Dec-25
+# Last edited: 7-Jan-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -10,21 +10,31 @@
 
 # Install and load packages
 
-packages <- c("tidyverse",
-              "units",
-              "glue",
-              "curl",
-              "sf",
-              "terra",
-              "adehabitatHR",
-              "ctmm",
-              "landscapemetrics",
-              "daymetr")
+packages <- c(dplyr = "1.1.4",
+              units = "1.0-0",
+              glue = "1.8.0",
+              curl = "7.0.0",
+              sf = "1.0-23",
+              terra = "1.8-86",
+              adehabitatHR = "0.4.22",
+              ctmm = "1.3.0",
+              landscapemetrics = "2.2.1",
+              daymetr = "1.7.1")
 
-install.packages(setdiff(packages, 
-                         rownames(installed.packages())))
+install.packages('remotes')
+require(remotes)
 
-lapply(packages, require, character.only = T)
+# When the following code pauses and asks:
+# "Enter one or more numbers, or an empty line to skip updates:"
+# Type 1 then press enter to install all dependencies
+# This can take a while since some packages have a lot of dependencies
+
+mapply(remotes::install_version,
+       package = names(packages),
+       version = packages,
+       MoreArgs = list(dependencies = T))
+
+lapply(names(packages), require, character.only = T)
 
 ######################################################################
 
