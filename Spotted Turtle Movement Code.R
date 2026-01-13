@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 7-Jan-26
+# Last edited: 13-Jan-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -475,16 +475,18 @@ for(i in as.character(unique(low.buffer$IDY))) {
     tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
     out[out$IDY==i, "wetland.size3km"] <- tmp.sizes[1,3]
     # Calculate proportion and number of wetland features within home range areas
-    tmp <- terra::extract(wetland.patches[[yr]], split_mcp.polys[[i]], exact = T)
-    out[out$IDY==i, "pwet.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    out[out$IDY==i, "nwet.mcp"] <- length(unique(na.omit(tmp)$patches))
-    tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-    out[out$IDY==i, "wetland.size.mcp"] <- tmp.sizes[1,3]
-    tmp <- terra::extract(wetland.patches[[yr]], akde.polys[[i]], exact = T)
-    out[out$IDY==i, "pwet.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    out[out$IDY==i, "nwet.akde"] <- length(unique(na.omit(tmp)$patches))
-    tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-    out[out$IDY==i, "wetland.size.akde"] <- tmp.sizes[1,3]
+    if(out[out$IDY==i, "Points"] < 3) { } else {
+      tmp <- terra::extract(wetland.patches[[yr]], split_mcp.polys[[i]], exact = T)
+      out[out$IDY==i, "pwet.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+      out[out$IDY==i, "nwet.mcp"] <- length(unique(na.omit(tmp)$patches))
+      tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+      out[out$IDY==i, "wetland.size.mcp"] <- tmp.sizes[1,3]
+      tmp <- terra::extract(wetland.patches[[yr]], akde.polys[[i]], exact = T)
+      out[out$IDY==i, "pwet.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+      out[out$IDY==i, "nwet.akde"] <- length(unique(na.omit(tmp)$patches))
+      tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+      out[out$IDY==i, "wetland.size.akde"] <- tmp.sizes[1,3]
+    }
     # Calculate proportion developed features around capture point
     tmp <- terra::extract(dev.patches[[yr]], split_low.buffer[[i]], exact = T)
     out[out$IDY==i, "pdev250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
@@ -493,10 +495,12 @@ for(i in as.character(unique(low.buffer$IDY))) {
     tmp <- terra::extract(dev.patches[[yr]], split_hi.buffer[[i]], exact = T)
     out[out$IDY==i, "pdev3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
     # Calculate proportion developed features within home range areas
-    tmp <- terra::extract(dev.patches[[yr]], split_mcp.polys[[i]], exact = T)
-    out[out$IDY==i, "pdev.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    tmp <- terra::extract(dev.patches[[yr]], akde.polys[[i]], exact = T)
-    out[out$IDY==i, "pdev.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    if(out[out$IDY==i, "Points"] < 3) { } else {
+      tmp <- terra::extract(dev.patches[[yr]], split_mcp.polys[[i]], exact = T)
+      out[out$IDY==i, "pdev.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+      tmp <- terra::extract(dev.patches[[yr]], akde.polys[[i]], exact = T)
+      out[out$IDY==i, "pdev.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    }
     # Calculate wetland clumpiness index and cohesion within each buffer
     tmp <- terra::crop(lc[[yr]], split_low.buffer[[i]], touches = T, mask = T, snap = "out")
     tmp.clump <- lsm_c_clumpy(tmp)
@@ -514,16 +518,18 @@ for(i in as.character(unique(low.buffer$IDY))) {
     tmp.coh <- lsm_c_cohesion(tmp)
     out[out$IDY==i, "cohes3km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
     # Calculate wetland clumpiness index and cohesion within each home range polygon
-    tmp <- terra::crop(lc[[yr]], split_mcp.polys[[i]], touches = T, mask = T, snap = "out")
-    tmp.clump <- lsm_c_clumpy(tmp)
-    out[out$IDY==i, "clumpy.mcp"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
-    tmp.coh <- lsm_c_cohesion(tmp)
-    out[out$IDY==i, "cohes.mcp"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-    tmp <- terra::crop(lc[[yr]], akde.polys[[i]], touches = T, mask = T, snap = "out")
-    tmp.clump <- lsm_c_clumpy(tmp)
-    out[out$IDY==i, "clumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
-    tmp.coh <- lsm_c_cohesion(tmp)
-    out[out$IDY==i, "cohes.akde"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+    if(out[out$IDY==i, "Points"] < 3) { } else {
+      tmp <- terra::crop(lc[[yr]], split_mcp.polys[[i]], touches = T, mask = T, snap = "out")
+      tmp.clump <- lsm_c_clumpy(tmp)
+      out[out$IDY==i, "clumpy.mcp"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+      tmp.coh <- lsm_c_cohesion(tmp)
+      out[out$IDY==i, "cohes.mcp"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+      tmp <- terra::crop(lc[[yr]], akde.polys[[i]], touches = T, mask = T, snap = "out")
+      tmp.clump <- lsm_c_clumpy(tmp)
+      out[out$IDY==i, "clumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+      tmp.coh <- lsm_c_cohesion(tmp)
+      out[out$IDY==i, "cohes.akde"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+    }
   }
 }
 
