@@ -379,9 +379,17 @@ terra::plot(nwi.all)
 terra::plot(nwi.open)
 terra::plot(nwi.closed)
 
-binary.nwi.all <- nwi.all / nwi.all
-binary.nwi.open <- nwi.open / nwi.open
-binary.nwi.closed <- nwi.closed / nwi.closed
+nwi.all <- droplevels(nwi.all)
+nwi.open <- droplevels(nwi.open)
+nwi.closed <- droplevels(nwi.closed)
+
+binary.nwi.all <- classify(nwi.all, cbind(levels(nwi.all)[[1]]$ID, 1))
+binary.nwi.open <- classify(nwi.open, cbind(levels(nwi.open)[[1]]$ID, 1))
+binary.nwi.closed <- classify(nwi.closed, cbind(levels(nwi.closed)[[1]]$ID, 1))
+
+binary.nwi.all <- classify(binary.nwi.all, cbind(NA, 0))
+binary.nwi.open <- classify(binary.nwi.open, cbind(NA, 0))
+binary.nwi.closed <- classify(binary.nwi.closed, cbind(NA, 0))
 
 # Create buffers within which we'll calculate landscape variables
 
