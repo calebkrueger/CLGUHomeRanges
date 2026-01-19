@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 13-Jan-26
+# Last edited: 19-Jan-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -19,7 +19,8 @@ packages <- c(dplyr = "1.1.4",
               adehabitatHR = "0.4.22",
               ctmm = "1.3.0",
               landscapemetrics = "2.2.1",
-              daymetr = "1.7.1")
+              daymetr = "1.7.1",
+              spData = "2.3.4")
 
 install.packages('remotes')
 require(remotes)
@@ -76,6 +77,12 @@ sf.df <- st_as_sf(data,
 # Calculate 100% MCP home range size
 # Also calculates first and last days of tracking, tracking period, and # of points
 
+# The following code calculates the appropriate UTM zone to reproject your data
+# If data are from multiple sites across UTM zones, run them separately!
+
+utm <- 32600 + (floor((mean(data$Longitude) + 180)/6)) + 1
+sf.df <- st_transform(sf.df, crs = utm)
+
 sf.df %>%
   group_by(ID, IDY) %>%
   summarise(IDY = unique(IDY),
@@ -99,14 +106,6 @@ sf.df %>%
 
 sf.df[!sf.df$IDY %in% out[out$Points < 5,]$IDY,] -> ade.df
 ade.df$IDY <- droplevels(ade.df$IDY)
-
-# Next, reproject from decimal degrees to meters
-# e.g., transform from crs 4326 (WGS84) to 3261_ (WGS84 UTM Zone X)
-# The following code calculates the appropriate UTM zone for your data
-# If data are from multiple sites across UTM zones, run them separately!
-
-utm <- 32600 + (floor((mean(data$Longitude) + 180)/6)) + 1
-ade.df <- st_transform(ade.df, crs = utm)
 ade.df <- as(ade.df[,"IDY"], "Spatial")
 
 # Calculate 95% MCPs
@@ -150,6 +149,7 @@ data %>%
 # Also outputs empirical variograms for assessing home ranging behavior
 
 mods <- list()
+first.fits <- list()
 fits <- list()
 variograms <- list()
 
@@ -164,19 +164,28 @@ for(i in 1:length(tel.df)){
   mods[[i]] <- ctmm.guess(tel.df[[i]],
                           variogram = variograms[[i]],
                           interactive = F)
-  fits[[i]] <- ctmm.select(tel.df[[i]],
-                           mods[[i]],
-                           method = "pHREML",
-                           IC = "AICc",
-                           verbose = T,
-                           cores = 4)
-  x <- summary(fits[[i]])
-  out[out$IDY == tel.df[[i]]@info$identity,]$ctmm.mod <- rownames(x)[1]
+  first.fits[[i]] <- ctmm.select(tel.df[[i]],
+                                 mods[[i]],
+                                 method = "pHREML",
+                                 IC = "AICc",
+                                 verbose = T,
+                                 cores = 4)
+  x <- summary(first.fits[[i]])
+  # Perform parametric bootstrapping for individuals with small Neff
+  if(x[1,3] < 5 & x[1,3] > 2.7){
+    fits[[i]] <- ctmm.boot(tel.df[[i]],
+                           first.fits[[i]][[1]],
+                           error = 0.05,
+                           iterate = T)
+  } else {
+    fits[[i]] <- first.fits[[i]][[1]]
+  }
+  out[out$IDY == tel.df[[i]]@info$identity,]$ctmm.mod <- summary(fits[[i]])$name
   # Print and visualize outputs
   print(variograms[[i]]@info$identity)
-  print(x)
+  print(summary(fits[[i]]))
   plot(variograms[[i]],
-       CTMM = fits[[i]][[1]],
+       CTMM = fits[[i]],
        level = c(0.5, 0.95),
        fraction = 1,
        main = variograms[[i]]@info$identity)
@@ -191,7 +200,7 @@ out$AKDE50 <- NA
 out$neff <- NA
 
 for(i in 1:length(tel.df)){
-  tmp.fit <- fits[[i]][[1]]
+  tmp.fit <- fits[[i]]
   akdehr[[i]] <- akde(tel.df[[i]],
                       tmp.fit,
                       debias = T,
@@ -231,9 +240,9 @@ extra_info %>%
 data %>%
   arrange(Date) %>% 
   group_by(IDY) %>%
-  slice_head(n = 1) %>%
   st_as_sf(coords = c("Longitude", "Latitude"),
            crs = 4326) %>%
+  st_transform(crs = utm) %>%
   st_buffer(dist = set_units(5, "km")) -> buffer.polys
 
 # Download the Annual NLCD raster for each year in the dataset
@@ -325,6 +334,55 @@ lc <- lapply(lc, function(x){
 
 terra::plot(lc[[1]])
 
+# Download NWI data for your state
+# Need to start by using coordinates to determine state code
+
+states <- st_transform(spData::us_states, crs = crs(sf.df))
+state <- state.abb[match(states[["NAME"]][as.integer(st_intersects(sf.df[1,], states))],state.name)]
+
+temp_zip <- tempfile(fileext = ".zip")
+zip_url <- glue("https://documentst.ecosphere.fws.gov/wetlands/data/State-Downloads/{state}_geodatabase_wetlands.zip")
+
+curl_download(url = zip_url,
+              destfile = temp_zip,
+              handle = new_handle(timeout = 1e6))
+
+unzip(temp_zip,
+      exdir = tempdir())
+
+# Read in the NWI vector data and convert to raster
+
+wetlands <- terra::vect(paste(tempdir(), glue("/{state}_geodatabase_wetlands.gdb"), sep =""),
+                        layer = glue("{state}_Wetlands"),
+                        proxy = T)
+
+wet.crop <- terra::project(query(wetlands, extent = terra::project(lc[[1]], crs(wetlands))), crs(lc[[1]]))
+wet.rast <- rasterize(wet.crop,
+                      disagg(lc[[1]], fact = 2),
+                      field = "WETLAND_TYPE")
+
+# Remove lakes, rivers/streams, and marine wetlands and deepwater from NWI wetland raster
+
+nwi.all <- mask(wet.rast,
+                wet.rast %in% c("Lake", "Riverine", "Estuarine and Marine Wetland", "Estuarine and Marine Deepwater"),
+                maskvalue = 1)
+
+nwi.open <- mask(nwi.all,
+                 nwi.all %in% c("Freshwater Forested/Shrub Wetland"),
+                 maskvalue = 1)
+
+nwi.closed <- mask(nwi.all,
+                   nwi.all %in% c("Freshwater Emergent Wetland", "Freshwater Pond", "Other"),
+                   maskvalue = 1)
+
+terra::plot(nwi.all)
+terra::plot(nwi.open)
+terra::plot(nwi.closed)
+
+binary.nwi.all <- nwi.all / nwi.all
+binary.nwi.open <- nwi.open / nwi.open
+binary.nwi.closed <- nwi.closed / nwi.closed
+
 # Create buffers within which we'll calculate landscape variables
 
 # 250 meters
@@ -413,6 +471,20 @@ wetland.cells <- lapply(seq_along(wetland.cells), function(i){
 })
 
 names(lc.water) <- names(wetland.patches) <- names(wetland.cells) <- year
+
+# Repeat for NWI rasters
+
+nwi.all.wetland.patches <- patches(nwi.all, directions = 8)
+nwi.all.wetland.cells <- freq(nwi.all.wetland.patches)
+nwi.all.wetland.cells$count <- nwi.all.wetland.cells$count * ((15*15) / 1e4)
+
+nwi.open.wetland.patches <- patches(nwi.open, directions = 8)
+nwi.open.wetland.cells <- freq(nwi.open.wetland.patches)
+nwi.open.wetland.cells$count <- nwi.open.wetland.cells$count * ((15*15) / 1e4)
+
+nwi.closed.wetland.patches <- patches(nwi.closed, directions = 8)
+nwi.closed.wetland.cells <- freq(nwi.closed.wetland.patches)
+nwi.closed.wetland.cells$count <- nwi.closed.wetland.cells$count * ((15*15) / 1e4)
 
 # Repeat for developed land
 
@@ -533,6 +605,205 @@ for(i in as.character(unique(low.buffer$IDY))) {
   }
 }
 
+# Calculate landscape variables using NWI rasters instead
+
+for(i in as.character(unique(low.buffer$IDY))) {
+  # Calculate distance from capture point to nearest wetland
+  out[out$IDY==i, "NWI.wetland.dist"] <- min(terra::distance(x = vect(split_pts[[i]]),
+                                                         y = as.polygons(nwi.all.wetland.patches)))
+  out[out$IDY==i, "NWI.open.dist"] <- min(terra::distance(x = vect(split_pts[[i]]),
+                                                          y = as.polygons(nwi.open.wetland.patches)))
+  out[out$IDY==i, "NWI.closed.dist"] <- min(terra::distance(x = vect(split_pts[[i]]),
+                                                            y = as.polygons(nwi.closed.wetland.patches)))
+  # Calculate size of wetland closest to capture point
+  nearby(x = vect(split_pts[[i]]),
+         y = as.polygons(nwi.all.wetland.patches),
+         centroids = F)[2] -> idx
+  out[out$IDY==i, "NWI.wetland.size"] <- nwi.all.wetland.cells[idx, 3]
+  nearby(x = vect(split_pts[[i]]),
+         y = as.polygons(nwi.open.wetland.patches),
+         centroids = F)[2] -> idx
+  out[out$IDY==i, "NWI.open.size"] <- nwi.open.wetland.cells[idx, 3]
+  nearby(x = vect(split_pts[[i]]),
+         y = as.polygons(nwi.closed.wetland.patches),
+         centroids = F)[2] -> idx
+  out[out$IDY==i, "NWI.closed.size"] <- nwi.closed.wetland.cells[idx, 3]
+  # Calculate proportion and number of wetland features around capture point, size of largest wetland
+  tmp <- terra::extract(nwi.all.wetland.patches, split_low.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.pwet250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nwet250m"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.wetland.size250m"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.all.wetland.patches, split_med.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.pwet1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nwet1km"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.wetland.size1km"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.all.wetland.patches, split_hi.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.pwet3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nwet3km"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.wetland.size3km"] <- tmp.sizes[1,3]
+  # Repeat with only open canopy wetlands
+  tmp <- terra::extract(nwi.open.wetland.patches, split_low.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.popen250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nopen250m"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.open.size250m"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.open.wetland.patches, split_med.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.popen1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nopen1km"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.open.size1km"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.open.wetland.patches, split_hi.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.popen3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nopen3km"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.open.size3km"] <- tmp.sizes[1,3]
+  # Repeat again for closed canopy wetlands
+  tmp <- terra::extract(nwi.closed.wetland.patches, split_low.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.pclosed250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nclosed250m"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.closed.size250m"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.closed.wetland.patches, split_med.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.pclosed1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nclosed1km"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.closed.size1km"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.closed.wetland.patches, split_hi.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.pclosed3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nclosed3km"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.closed.size3km"] <- tmp.sizes[1,3]
+  # Calculate proportion and number of wetland features within home range areas
+  if(out[out$IDY==i, "Points"] < 3) { } else {
+    tmp <- terra::extract(nwi.all.wetland.patches, split_mcp.polys[[i]], exact = T)
+    out[out$IDY==i, "NWI.pwet.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    out[out$IDY==i, "NWI.nwet.mcp"] <- length(unique(na.omit(tmp)$patches))
+    tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+    out[out$IDY==i, "NWI.wetland.size.mcp"] <- tmp.sizes[1,3]
+    tmp <- terra::extract(nwi.all.wetland.patches, akde.polys[[i]], exact = T)
+    out[out$IDY==i, "NWI.pwet.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    out[out$IDY==i, "NWI.nwet.akde"] <- length(unique(na.omit(tmp)$patches))
+    tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+    out[out$IDY==i, "NWI.wetland.size.akde"] <- tmp.sizes[1,3]
+  }
+  # Repeat with open canopy wetlands
+  if(out[out$IDY==i, "Points"] < 3) { } else {
+    tmp <- terra::extract(nwi.open.wetland.patches, split_mcp.polys[[i]], exact = T)
+    out[out$IDY==i, "NWI.popen.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    out[out$IDY==i, "NWI.nopen.mcp"] <- length(unique(na.omit(tmp)$patches))
+    tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+    out[out$IDY==i, "NWI.open.size.mcp"] <- tmp.sizes[1,3]
+    tmp <- terra::extract(nwi.open.wetland.patches, akde.polys[[i]], exact = T)
+    out[out$IDY==i, "NWI.popen.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    out[out$IDY==i, "NWI.nopen.akde"] <- length(unique(na.omit(tmp)$patches))
+    tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+    out[out$IDY==i, "NWI.open.size.akde"] <- tmp.sizes[1,3]
+  }
+  # Repeat with closed canopy wetlands
+  if(out[out$IDY==i, "Points"] < 3) { } else {
+    tmp <- terra::extract(nwi.closed.wetland.patches, split_mcp.polys[[i]], exact = T)
+    out[out$IDY==i, "NWI.pclosed.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    out[out$IDY==i, "NWI.nclosed.mcp"] <- length(unique(na.omit(tmp)$patches))
+    tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+    out[out$IDY==i, "NWI.closed.size.mcp"] <- tmp.sizes[1,3]
+    tmp <- terra::extract(nwi.closed.wetland.patches, akde.polys[[i]], exact = T)
+    out[out$IDY==i, "NWI.pclosed.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    out[out$IDY==i, "NWI.nclosed.akde"] <- length(unique(na.omit(tmp)$patches))
+    tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+    out[out$IDY==i, "NWI.closed.size.akde"] <- tmp.sizes[1,3]
+  }
+  # Calculate wetland clumpiness index and cohesion within each buffer
+  tmp <- terra::crop(binary.nwi.all, split_low.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.clumpy250m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.cohes250m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.all, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.clumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.cohes1km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.all, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.clumpy3km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.cohes3km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  # Repeat with open canopy wetlands
+  tmp <- terra::crop(binary.nwi.open, split_low.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.openclumpy250m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.opencohes250m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.open, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.openclumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.opencohes1km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.open, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.openclumpy3km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.opencohes3km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  # Repeat with closed canopy wetlands
+  tmp <- terra::crop(binary.nwi.closed, split_low.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.closedclumpy250m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.closedcohes250m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.closed, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.closedclumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.closedcohes1km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.closed, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.closedclumpy3km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.closedcohes3km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  # Calculate wetland clumpiness index and cohesion within each home range polygon
+  if(out[out$IDY==i, "Points"] < 3) { } else {
+    tmp <- terra::crop(binary.nwi.all, split_mcp.polys[[i]], touches = T, mask = T, snap = "out")
+    tmp.clump <- lsm_c_clumpy(tmp)
+    out[out$IDY==i, "NWI.clumpy.mcp"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+    tmp.coh <- lsm_c_cohesion(tmp)
+    out[out$IDY==i, "NWI.cohes.mcp"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+    tmp <- terra::crop(binary.nwi.all, akde.polys[[i]], touches = T, mask = T, snap = "out")
+    tmp.clump <- lsm_c_clumpy(tmp)
+    out[out$IDY==i, "NWI.clumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+    tmp.coh <- lsm_c_cohesion(tmp)
+    out[out$IDY==i, "NWI.cohes.akde"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  }
+  # Repeat with open canopy wetlands
+  if(out[out$IDY==i, "Points"] < 3) { } else {
+    tmp <- terra::crop(binary.nwi.open, split_mcp.polys[[i]], touches = T, mask = T, snap = "out")
+    tmp.clump <- lsm_c_clumpy(tmp)
+    out[out$IDY==i, "NWI.openclumpy.mcp"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+    tmp.coh <- lsm_c_cohesion(tmp)
+    out[out$IDY==i, "NWI.opencohes.mcp"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+    tmp <- terra::crop(binary.nwi.open, akde.polys[[i]], touches = T, mask = T, snap = "out")
+    tmp.clump <- lsm_c_clumpy(tmp)
+    out[out$IDY==i, "NWI.openclumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+    tmp.coh <- lsm_c_cohesion(tmp)
+    out[out$IDY==i, "NWI.opencohes.akde"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  }
+  # Repeat with closed canopy wetlands
+  if(out[out$IDY==i, "Points"] < 3) { } else {
+    tmp <- terra::crop(binary.nwi.closed, split_mcp.polys[[i]], touches = T, mask = T, snap = "out")
+    tmp.clump <- lsm_c_clumpy(tmp)
+    out[out$IDY==i, "NWI.closedclumpy.mcp"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+    tmp.coh <- lsm_c_cohesion(tmp)
+    out[out$IDY==i, "NWI.closedcohes.mcp"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+    tmp <- terra::crop(binary.nwi.closed, akde.polys[[i]], touches = T, mask = T, snap = "out")
+    tmp.clump <- lsm_c_clumpy(tmp)
+    out[out$IDY==i, "NWI.closedclumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+    tmp.coh <- lsm_c_cohesion(tmp)
+    out[out$IDY==i, "NWI.closedcohes.akde"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  }
+}
+
 ######################################################################
 
 ## STEP THREE: CALCULATE PRECIPITATION AND TEMPERATURE METRICS ##
@@ -611,13 +882,13 @@ out %>%
 # Add new ID column that combines ID and Site name to ensure the IDs are unique
 
 out %>%
-  mutate(UniqueID = interaction(Site, 
+  mutate(UniqueID = interaction(as.character(Site), 
                                 ID,
                                 sep = "_",
                                 drop = T)) %>%
   select(UniqueID, IDY, ID, Site, Year, Sex, SCL, Mass, everything()) -> out
 
-# Save variogram object to RDS and out object to "output.csv"
+# Save variogram plots to pdf and out object to "output.csv"
 
 write.csv(out, 
           'output.csv',
@@ -628,10 +899,11 @@ pdf("variograms.pdf")
 par(mfrow = c(3,2))
 lapply(seq_along(variograms), function(i){
   plot(variograms[[i]],
-       CTMM = fits[[i]][[1]],
+       CTMM = fits[[i]],
        level = c(0.5, 0.95),
        fraction = 1,
        main = variograms[[i]]@info$identity)
 })
 
 dev.off()
+
