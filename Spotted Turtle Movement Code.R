@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 19-Jan-26
+# Last edited: 20-Jan-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -358,7 +358,7 @@ wetlands <- terra::vect(paste(tempdir(), glue("/{state}_geodatabase_wetlands.gdb
 
 wet.crop <- terra::project(query(wetlands, extent = terra::project(lc[[1]], crs(wetlands))), crs(lc[[1]]))
 wet.rast <- rasterize(wet.crop,
-                      disagg(lc[[1]], fact = 2),
+                      disagg(lc[[1]], fact = 3),
                       field = "WETLAND_TYPE")
 
 # Remove lakes, rivers/streams, and marine wetlands and deepwater from NWI wetland raster
@@ -484,15 +484,15 @@ names(lc.water) <- names(wetland.patches) <- names(wetland.cells) <- year
 
 nwi.all.wetland.patches <- patches(nwi.all, directions = 8)
 nwi.all.wetland.cells <- freq(nwi.all.wetland.patches)
-nwi.all.wetland.cells$count <- nwi.all.wetland.cells$count * ((15*15) / 1e4)
+nwi.all.wetland.cells$count <- nwi.all.wetland.cells$count * ((10*10) / 1e4)
 
 nwi.open.wetland.patches <- patches(nwi.open, directions = 8)
 nwi.open.wetland.cells <- freq(nwi.open.wetland.patches)
-nwi.open.wetland.cells$count <- nwi.open.wetland.cells$count * ((15*15) / 1e4)
+nwi.open.wetland.cells$count <- nwi.open.wetland.cells$count * ((10*10) / 1e4)
 
 nwi.closed.wetland.patches <- patches(nwi.closed, directions = 8)
 nwi.closed.wetland.cells <- freq(nwi.closed.wetland.patches)
-nwi.closed.wetland.cells$count <- nwi.closed.wetland.cells$count * ((15*15) / 1e4)
+nwi.closed.wetland.cells$count <- nwi.closed.wetland.cells$count * ((10*10) / 1e4)
 
 # Repeat for developed land
 
@@ -914,4 +914,5 @@ lapply(seq_along(variograms), function(i){
 })
 
 dev.off()
+
 
