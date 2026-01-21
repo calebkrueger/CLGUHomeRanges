@@ -90,6 +90,7 @@ sf.df %>%
             Finish = format(max(Date), "%j"),
             Days = as.numeric(max(Date) - min(Date)),
             Points = length(geometry),
+            UniquePoints = length(unique(geometry)),
             geometry = st_combine(geometry)) %>%
   mutate(geometry = st_convex_hull(geometry)) %>%
   reframe(ID,
@@ -98,6 +99,7 @@ sf.df %>%
           Finish,
           Days,
           Points,
+          UniquePoints,
           MCP100 = as.numeric(set_units(st_area(geometry), ha))) -> out
 
 # Convert object to a SpatialPointsDataFrame for adehabitatHR
@@ -137,7 +139,7 @@ as.data.frame(mcp(ade.df,
 # Project to same UTM Zone from above
 
 data %>%
-  filter(!IDY %in% out[out$Points < 3,]$IDY) %>%
+  filter(!IDY %in% out[out$UniquePoints < 3,]$IDY) %>%
   droplevels() %>%
   reframe(individual.local.identifier = IDY,
           timestamp = Date,
@@ -914,5 +916,6 @@ lapply(seq_along(variograms), function(i){
 })
 
 dev.off()
+
 
 
