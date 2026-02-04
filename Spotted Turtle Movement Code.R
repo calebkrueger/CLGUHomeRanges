@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 20-Jan-26
+# Last edited: 3-Feb-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -74,10 +74,10 @@ sf.df <- st_as_sf(data,
                   coords = c("Longitude", "Latitude"),
                   crs = 4326)
 
-# Calculate 100% MCP home range size
+# Calculate 100% MCP home range size by calendar year for each individual
 # Also calculates first and last days of tracking, tracking period, and # of points
 
-# The following code calculates the appropriate UTM zone to reproject your data
+# The following code calculates the appropriate UTM zone to project your data
 # If data are from multiple sites across UTM zones, run them separately!
 
 utm <- 32600 + (floor((mean(data$Longitude) + 180)/6)) + 1
@@ -103,7 +103,7 @@ sf.df %>%
           MCP100 = as.numeric(set_units(st_area(geometry), ha))) -> out
 
 # Convert object to a SpatialPointsDataFrame for adehabitatHR
-# Remove individuals with < 5 relocations in a tracking year
+# Remove individuals with < 5 points
 # adehabitatHR doesn't like them
 
 sf.df[!sf.df$IDY %in% out[out$Points < 5,]$IDY,] -> ade.df
@@ -133,7 +133,7 @@ as.data.frame(mcp(ade.df,
 # Calculate 95% and 50% wAKDEc
 
 # First, convert the data to a format that ctmm likes
-# Remove individuals with < 3 points
+# Remove individuals with < 3 unique points
 # This is the lower technical limit for ctmm to estimate movement models
 # Individuals will be filtered later on as well
 # Project to same UTM Zone from above
@@ -235,13 +235,11 @@ extra_info %>%
 
 ## STEP TWO: CALCULATE LANDSCAPE METRICS ##
 
-# Create buffered capture points to crop NLCD raster
+# Create buffered points to crop NLCD and NWI rasters
 # 5 km is well beyond known movement distances of spotted turtles
 # So no relevant habitat is being removed
 
 data %>%
-  arrange(Date) %>% 
-  group_by(IDY) %>%
   st_as_sf(coords = c("Longitude", "Latitude"),
            crs = 4326) %>%
   st_transform(crs = utm) %>%
@@ -250,10 +248,11 @@ data %>%
 # Download the Annual NLCD raster for each year in the dataset
 
 # First, create list of years, download locations, and download urls
-# Currently, 2025 needs to be dropped because data are not available yet
+# Currently, 2025 needs to use 2024 raster because 2025 data are not available yet
 
 year <- unique(format(data$Date, "%Y"))
-year <- as.list(year[year < 2025])
+year[year == 2025] <- 2024
+year <- as.list(unique(year))
 
 temp_zip <- lapply(seq_along(year), function(x){
   temp <- tempfile(fileext = ".zip")})
@@ -395,8 +394,22 @@ binary.nwi.closed <- classify(binary.nwi.closed, cbind(NA, 0))
 
 # Create buffers within which we'll calculate landscape variables
 
+# 100 meters
+# ~1st quartile of maximum displacements from telemetry data in study
+# Used to delineate 'long' movements between relocations (see Chandler et al. 2019)
+
+data %>%
+  arrange(Date) %>%
+  group_by(IDY) %>%
+  slice_head(n = 1) %>%
+  st_as_sf(coords = c("Longitude", "Latitude"),
+           crs = 4326) %>%
+  st_transform(crs = crs(lc[[1]])) %>%
+  st_buffer(dist = set_units(100, "m")) -> low.buffer
+
 # 250 meters
 # Average home range length from published literature
+# Average maximum displacement from telemetry data in study
 # Also predicted wetland occupancy in Joyal et al. 2001
 # Also ~ average interwetland movement observed in Milam & Melvin 2001, Beaudry et al. 2009
 
@@ -407,10 +420,11 @@ data %>%
   st_as_sf(coords = c("Longitude", "Latitude"),
            crs = 4326) %>%
   st_transform(crs = crs(lc[[1]])) %>%
-  st_buffer(dist = set_units(250, "m")) -> low.buffer
+  st_buffer(dist = set_units(250, "m")) -> med.buffer
 
 # 1 kilometer
 # Maximum inter-wetland movement of Joyal et al. 2001, Beaudry et al. 2009
+# Largest maximum displacement from telemetry data in study
 
 data %>%
   arrange(Date) %>% 
@@ -419,19 +433,7 @@ data %>%
   st_as_sf(coords = c("Longitude", "Latitude"),
            crs = 4326) %>%
   st_transform(crs = crs(lc[[1]])) %>%
-  st_buffer(dist = set_units(1, "km")) -> med.buffer
-
-# 3 kilometers
-# Maximum movement from Lassiter et al. 2024
-
-data %>%
-  arrange(Date) %>% 
-  group_by(IDY) %>%
-  slice_head(n = 1) %>%
-  st_as_sf(coords = c("Longitude", "Latitude"),
-           crs = 4326) %>%
-  st_transform(crs = crs(lc[[1]])) %>%
-  st_buffer(dist = set_units(3, "km")) -> hi.buffer
+  st_buffer(dist = set_units(1, "km")) -> hi.buffer
 
 # Create object of initial capture points for each individual
 
@@ -443,9 +445,9 @@ data %>%
            crs = 4326) %>%
   st_transform(crs = crs(lc[[1]])) -> pts
 
-sf.df <- st_transform(sf.df, crs = crs(lc[[1]]))
-
 # Create object with 100% MCP polygons
+
+sf.df <- st_transform(sf.df, crs = crs(lc[[1]]))
 
 sf.df %>%
   group_by(IDY) %>%
@@ -521,97 +523,95 @@ split_med.buffer <- split(med.buffer, med.buffer$IDY)
 split_hi.buffer <- split(hi.buffer, hi.buffer$IDY)
 split_mcp.polys <- split(mcp.polys, mcp.polys$IDY)
 
-# Extract landscape variables of interest using each buffer level
+# Extract landscape variables of interest from NLCD raster using each buffer level
 
 for(i in as.character(unique(low.buffer$IDY))) {
   yr <- substr(i, nchar(i)-3, nchar(i))
-  if(yr == 2025){
-  } else {
-    # Calculate distance from capture point to nearest wetland
-    out[out$IDY==i, "wetland.dist"] <- min(terra::distance(x = vect(split_pts[[i]]),
-                                                           y = as.polygons(wetland.patches[[yr]])))
-    # Calculate size of wetland closest to capture point
-    nearby(x = vect(split_pts[[i]]),
-           y = as.polygons(wetland.patches[[yr]]),
-           centroids = F)[2] -> idx
-    tmp.wetland.cells <- wetland.cells[[yr]]
-    out[out$IDY==i, "wetland.size"] <- tmp.wetland.cells[idx, 3]
-    # Calculate maximum and net displacement
-    dists <- st_distance(split_pts[[i]], split_sf.df[[i]])
-    out[out$IDY==i, "dmax"] <- as.numeric(max(dists))
-    out[out$IDY==i, "dnet"] <- as.numeric(dists[length(dists)])
-    # Calculate proportion and number of wetland features around capture point, size of largest wetland
-    tmp <- terra::extract(wetland.patches[[yr]], split_low.buffer[[i]], exact = T)
-    out[out$IDY==i, "pwet250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    out[out$IDY==i, "nwet250m"] <- length(unique(na.omit(tmp)$patches))
+  yr <- ifelse(yr == 2025, as.character(2024), yr)
+  # Calculate maximum and net displacement
+  dists <- st_distance(split_pts[[i]], split_sf.df[[i]])
+  out[out$IDY==i, "dmax"] <- as.numeric(max(dists))
+  out[out$IDY==i, "dnet"] <- as.numeric(dists[length(dists)])
+  # Calculate distance from capture point to nearest wetland
+  out[out$IDY==i, "wetland.dist"] <- min(terra::distance(x = vect(split_pts[[i]]),
+                                                         y = as.polygons(wetland.patches[[yr]])))
+  # Calculate size of wetland closest to capture point
+  nearby(x = vect(split_pts[[i]]),
+         y = as.polygons(wetland.patches[[yr]]),
+         centroids = F)[2] -> idx
+  tmp.wetland.cells <- wetland.cells[[yr]]
+  out[out$IDY==i, "wetland.size"] <- tmp.wetland.cells[idx, 3]
+  # Calculate proportion and number of wetland features around capture point, size of largest wetland
+  tmp <- terra::extract(wetland.patches[[yr]], split_low.buffer[[i]], exact = T)
+  out[out$IDY==i, "pwet100m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "nwet100m"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "wetland.size100m"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(wetland.patches[[yr]], split_med.buffer[[i]], exact = T)
+  out[out$IDY==i, "pwet250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "nwet250m"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "wetland.size250m"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(wetland.patches[[yr]], split_hi.buffer[[i]], exact = T)
+  out[out$IDY==i, "pwet1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "nwet1km"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "wetland.size1km"] <- tmp.sizes[1,3]
+  # Calculate proportion and number of wetland features within home range areas
+  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+    tmp <- terra::extract(wetland.patches[[yr]], split_mcp.polys[[i]], exact = T)
+    out[out$IDY==i, "pwet.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    out[out$IDY==i, "nwet.mcp"] <- length(unique(na.omit(tmp)$patches))
     tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-    out[out$IDY==i, "wetland.size250m"] <- tmp.sizes[1,3]
-    tmp <- terra::extract(wetland.patches[[yr]], split_med.buffer[[i]], exact = T)
-    out[out$IDY==i, "pwet1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    out[out$IDY==i, "nwet1km"] <- length(unique(na.omit(tmp)$patches))
+    out[out$IDY==i, "wetland.size.mcp"] <- tmp.sizes[1,3]
+    tmp <- terra::extract(wetland.patches[[yr]], akde.polys[[i]], exact = T)
+    out[out$IDY==i, "pwet.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    out[out$IDY==i, "nwet.akde"] <- length(unique(na.omit(tmp)$patches))
     tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-    out[out$IDY==i, "wetland.size1km"] <- tmp.sizes[1,3]
-    tmp <- terra::extract(wetland.patches[[yr]], split_hi.buffer[[i]], exact = T)
-    out[out$IDY==i, "pwet3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    out[out$IDY==i, "nwet3km"] <- length(unique(na.omit(tmp)$patches))
-    tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-    out[out$IDY==i, "wetland.size3km"] <- tmp.sizes[1,3]
-    # Calculate proportion and number of wetland features within home range areas
-    if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
-      tmp <- terra::extract(wetland.patches[[yr]], split_mcp.polys[[i]], exact = T)
-      out[out$IDY==i, "pwet.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-      out[out$IDY==i, "nwet.mcp"] <- length(unique(na.omit(tmp)$patches))
-      tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-      out[out$IDY==i, "wetland.size.mcp"] <- tmp.sizes[1,3]
-      tmp <- terra::extract(wetland.patches[[yr]], akde.polys[[i]], exact = T)
-      out[out$IDY==i, "pwet.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-      out[out$IDY==i, "nwet.akde"] <- length(unique(na.omit(tmp)$patches))
-      tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-      out[out$IDY==i, "wetland.size.akde"] <- tmp.sizes[1,3]
-    }
-    # Calculate proportion developed features around capture point
-    tmp <- terra::extract(dev.patches[[yr]], split_low.buffer[[i]], exact = T)
-    out[out$IDY==i, "pdev250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    tmp <- terra::extract(dev.patches[[yr]], split_med.buffer[[i]], exact = T)
-    out[out$IDY==i, "pdev1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    tmp <- terra::extract(dev.patches[[yr]], split_hi.buffer[[i]], exact = T)
-    out[out$IDY==i, "pdev3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    # Calculate proportion developed features within home range areas
-    if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
-      tmp <- terra::extract(dev.patches[[yr]], split_mcp.polys[[i]], exact = T)
-      out[out$IDY==i, "pdev.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-      tmp <- terra::extract(dev.patches[[yr]], akde.polys[[i]], exact = T)
-      out[out$IDY==i, "pdev.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-    }
-    # Calculate wetland clumpiness index and cohesion within each buffer
-    tmp <- terra::crop(lc[[yr]], split_low.buffer[[i]], touches = T, mask = T, snap = "out")
+    out[out$IDY==i, "wetland.size.akde"] <- tmp.sizes[1,3]
+  }
+  # Calculate proportion developed features around capture point
+  tmp <- terra::extract(dev.patches[[yr]], split_low.buffer[[i]], exact = T)
+  out[out$IDY==i, "pdev100m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  tmp <- terra::extract(dev.patches[[yr]], split_med.buffer[[i]], exact = T)
+  out[out$IDY==i, "pdev250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  tmp <- terra::extract(dev.patches[[yr]], split_hi.buffer[[i]], exact = T)
+  out[out$IDY==i, "pdev1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  # Calculate proportion developed features within home range areas
+  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+    tmp <- terra::extract(dev.patches[[yr]], split_mcp.polys[[i]], exact = T)
+    out[out$IDY==i, "pdev.mcp"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+    tmp <- terra::extract(dev.patches[[yr]], akde.polys[[i]], exact = T)
+    out[out$IDY==i, "pdev.akde"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  }
+  # Calculate wetland clumpiness index and cohesion within each buffer
+  tmp <- terra::crop(lc[[yr]], split_low.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "clumpy100m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "cohes100m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(lc[[yr]], split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "clumpy250m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "cohes250m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(lc[[yr]], split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "clumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "cohes1km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  # Calculate wetland clumpiness index and cohesion within each home range polygon
+  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+    tmp <- terra::crop(lc[[yr]], split_mcp.polys[[i]], touches = T, mask = T, snap = "out")
     tmp.clump <- lsm_c_clumpy(tmp)
-    out[out$IDY==i, "clumpy250m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+    out[out$IDY==i, "clumpy.mcp"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
     tmp.coh <- lsm_c_cohesion(tmp)
-    out[out$IDY==i, "cohes250m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-    tmp <- terra::crop(lc[[yr]], split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+    out[out$IDY==i, "cohes.mcp"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+    tmp <- terra::crop(lc[[yr]], akde.polys[[i]], touches = T, mask = T, snap = "out")
     tmp.clump <- lsm_c_clumpy(tmp)
-    out[out$IDY==i, "clumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+    out[out$IDY==i, "clumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
     tmp.coh <- lsm_c_cohesion(tmp)
-    out[out$IDY==i, "cohes1km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-    tmp <- terra::crop(lc[[yr]], split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
-    tmp.clump <- lsm_c_clumpy(tmp)
-    out[out$IDY==i, "clumpy3km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
-    tmp.coh <- lsm_c_cohesion(tmp)
-    out[out$IDY==i, "cohes3km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-    # Calculate wetland clumpiness index and cohesion within each home range polygon
-    if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
-      tmp <- terra::crop(lc[[yr]], split_mcp.polys[[i]], touches = T, mask = T, snap = "out")
-      tmp.clump <- lsm_c_clumpy(tmp)
-      out[out$IDY==i, "clumpy.mcp"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
-      tmp.coh <- lsm_c_cohesion(tmp)
-      out[out$IDY==i, "cohes.mcp"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-      tmp <- terra::crop(lc[[yr]], akde.polys[[i]], touches = T, mask = T, snap = "out")
-      tmp.clump <- lsm_c_clumpy(tmp)
-      out[out$IDY==i, "clumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
-      tmp.coh <- lsm_c_cohesion(tmp)
-      out[out$IDY==i, "cohes.akde"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-    }
+    out[out$IDY==i, "cohes.akde"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
   }
 }
 
@@ -640,52 +640,52 @@ for(i in as.character(unique(low.buffer$IDY))) {
   out[out$IDY==i, "NWI.closed.size"] <- nwi.closed.wetland.cells[idx, 3]
   # Calculate proportion and number of wetland features around capture point, size of largest wetland
   tmp <- terra::extract(nwi.all.wetland.patches, split_low.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.pwet100m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nwet100m"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.wetland.size100m"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.all.wetland.patches, split_med.buffer[[i]], exact = T)
   out[out$IDY==i, "NWI.pwet250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
   out[out$IDY==i, "NWI.nwet250m"] <- length(unique(na.omit(tmp)$patches))
   tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
   out[out$IDY==i, "NWI.wetland.size250m"] <- tmp.sizes[1,3]
-  tmp <- terra::extract(nwi.all.wetland.patches, split_med.buffer[[i]], exact = T)
+  tmp <- terra::extract(nwi.all.wetland.patches, split_hi.buffer[[i]], exact = T)
   out[out$IDY==i, "NWI.pwet1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
   out[out$IDY==i, "NWI.nwet1km"] <- length(unique(na.omit(tmp)$patches))
   tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
   out[out$IDY==i, "NWI.wetland.size1km"] <- tmp.sizes[1,3]
-  tmp <- terra::extract(nwi.all.wetland.patches, split_hi.buffer[[i]], exact = T)
-  out[out$IDY==i, "NWI.pwet3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-  out[out$IDY==i, "NWI.nwet3km"] <- length(unique(na.omit(tmp)$patches))
-  tmp.sizes <- nwi.all.wetland.cells[nwi.all.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-  out[out$IDY==i, "NWI.wetland.size3km"] <- tmp.sizes[1,3]
   # Repeat with only open canopy wetlands
   tmp <- terra::extract(nwi.open.wetland.patches, split_low.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.popen100m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nopen100m"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.open.size100m"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.open.wetland.patches, split_med.buffer[[i]], exact = T)
   out[out$IDY==i, "NWI.popen250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
   out[out$IDY==i, "NWI.nopen250m"] <- length(unique(na.omit(tmp)$patches))
   tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
   out[out$IDY==i, "NWI.open.size250m"] <- tmp.sizes[1,3]
-  tmp <- terra::extract(nwi.open.wetland.patches, split_med.buffer[[i]], exact = T)
+  tmp <- terra::extract(nwi.open.wetland.patches, split_hi.buffer[[i]], exact = T)
   out[out$IDY==i, "NWI.popen1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
   out[out$IDY==i, "NWI.nopen1km"] <- length(unique(na.omit(tmp)$patches))
   tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
   out[out$IDY==i, "NWI.open.size1km"] <- tmp.sizes[1,3]
-  tmp <- terra::extract(nwi.open.wetland.patches, split_hi.buffer[[i]], exact = T)
-  out[out$IDY==i, "NWI.popen3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-  out[out$IDY==i, "NWI.nopen3km"] <- length(unique(na.omit(tmp)$patches))
-  tmp.sizes <- nwi.open.wetland.cells[nwi.open.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-  out[out$IDY==i, "NWI.open.size3km"] <- tmp.sizes[1,3]
   # Repeat again for closed canopy wetlands
   tmp <- terra::extract(nwi.closed.wetland.patches, split_low.buffer[[i]], exact = T)
+  out[out$IDY==i, "NWI.pclosed100m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
+  out[out$IDY==i, "NWI.nclosed100m"] <- length(unique(na.omit(tmp)$patches))
+  tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
+  out[out$IDY==i, "NWI.closed.size100m"] <- tmp.sizes[1,3]
+  tmp <- terra::extract(nwi.closed.wetland.patches, split_med.buffer[[i]], exact = T)
   out[out$IDY==i, "NWI.pclosed250m"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
   out[out$IDY==i, "NWI.nclosed250m"] <- length(unique(na.omit(tmp)$patches))
   tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
   out[out$IDY==i, "NWI.closed.size250m"] <- tmp.sizes[1,3]
-  tmp <- terra::extract(nwi.closed.wetland.patches, split_med.buffer[[i]], exact = T)
+  tmp <- terra::extract(nwi.closed.wetland.patches, split_hi.buffer[[i]], exact = T)
   out[out$IDY==i, "NWI.pclosed1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
   out[out$IDY==i, "NWI.nclosed1km"] <- length(unique(na.omit(tmp)$patches))
   tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
   out[out$IDY==i, "NWI.closed.size1km"] <- tmp.sizes[1,3]
-  tmp <- terra::extract(nwi.closed.wetland.patches, split_hi.buffer[[i]], exact = T)
-  out[out$IDY==i, "NWI.pclosed3km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
-  out[out$IDY==i, "NWI.nclosed3km"] <- length(unique(na.omit(tmp)$patches))
-  tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
-  out[out$IDY==i, "NWI.closed.size3km"] <- tmp.sizes[1,3]
   # Calculate proportion and number of wetland features within home range areas
   if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
     tmp <- terra::extract(nwi.all.wetland.patches, split_mcp.polys[[i]], exact = T)
@@ -728,51 +728,51 @@ for(i in as.character(unique(low.buffer$IDY))) {
   # Calculate wetland clumpiness index and cohesion within each buffer
   tmp <- terra::crop(binary.nwi.all, split_low.buffer[[i]], touches = T, mask = T, snap = "out")
   tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.clumpy100m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.cohes100m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.all, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
   out[out$IDY==i, "NWI.clumpy250m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   tmp.coh <- lsm_c_cohesion(tmp)
   out[out$IDY==i, "NWI.cohes250m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-  tmp <- terra::crop(binary.nwi.all, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp <- terra::crop(binary.nwi.all, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
   tmp.clump <- lsm_c_clumpy(tmp)
   out[out$IDY==i, "NWI.clumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   tmp.coh <- lsm_c_cohesion(tmp)
   out[out$IDY==i, "NWI.cohes1km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-  tmp <- terra::crop(binary.nwi.all, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
-  tmp.clump <- lsm_c_clumpy(tmp)
-  out[out$IDY==i, "NWI.clumpy3km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
-  tmp.coh <- lsm_c_cohesion(tmp)
-  out[out$IDY==i, "NWI.cohes3km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
   # Repeat with open canopy wetlands
   tmp <- terra::crop(binary.nwi.open, split_low.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.openclumpy100m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.opencohes100m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.open, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
   tmp.clump <- lsm_c_clumpy(tmp)
   out[out$IDY==i, "NWI.openclumpy250m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   tmp.coh <- lsm_c_cohesion(tmp)
   out[out$IDY==i, "NWI.opencohes250m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-  tmp <- terra::crop(binary.nwi.open, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp <- terra::crop(binary.nwi.open, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
   tmp.clump <- lsm_c_clumpy(tmp)
   out[out$IDY==i, "NWI.openclumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   tmp.coh <- lsm_c_cohesion(tmp)
   out[out$IDY==i, "NWI.opencohes1km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-  tmp <- terra::crop(binary.nwi.open, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
-  tmp.clump <- lsm_c_clumpy(tmp)
-  out[out$IDY==i, "NWI.openclumpy3km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
-  tmp.coh <- lsm_c_cohesion(tmp)
-  out[out$IDY==i, "NWI.opencohes3km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
   # Repeat with closed canopy wetlands
   tmp <- terra::crop(binary.nwi.closed, split_low.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp.clump <- lsm_c_clumpy(tmp)
+  out[out$IDY==i, "NWI.closedclumpy100m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
+  tmp.coh <- lsm_c_cohesion(tmp)
+  out[out$IDY==i, "NWI.closedcohes100m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
+  tmp <- terra::crop(binary.nwi.closed, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
   tmp.clump <- lsm_c_clumpy(tmp)
   out[out$IDY==i, "NWI.closedclumpy250m"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   tmp.coh <- lsm_c_cohesion(tmp)
   out[out$IDY==i, "NWI.closedcohes250m"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-  tmp <- terra::crop(binary.nwi.closed, split_med.buffer[[i]], touches = T, mask = T, snap = "out")
+  tmp <- terra::crop(binary.nwi.closed, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
   tmp.clump <- lsm_c_clumpy(tmp)
   out[out$IDY==i, "NWI.closedclumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   tmp.coh <- lsm_c_cohesion(tmp)
   out[out$IDY==i, "NWI.closedcohes1km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
-  tmp <- terra::crop(binary.nwi.closed, split_hi.buffer[[i]], touches = T, mask = T, snap = "out")
-  tmp.clump <- lsm_c_clumpy(tmp)
-  out[out$IDY==i, "NWI.closedclumpy3km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
-  tmp.coh <- lsm_c_cohesion(tmp)
-  out[out$IDY==i, "NWI.closedcohes3km"] <- as.numeric(tmp.coh[tmp.coh$class == 1, 6])
   # Calculate wetland clumpiness index and cohesion within each home range polygon
   if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
     tmp <- terra::crop(binary.nwi.all, split_mcp.polys[[i]], touches = T, mask = T, snap = "out")
@@ -916,6 +916,7 @@ lapply(seq_along(variograms), function(i){
 })
 
 dev.off()
+
 
 
 
