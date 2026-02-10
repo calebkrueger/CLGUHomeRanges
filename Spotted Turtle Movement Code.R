@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 3-Feb-26
+# Last edited: 10-Feb-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -74,14 +74,37 @@ sf.df <- st_as_sf(data,
                   coords = c("Longitude", "Latitude"),
                   crs = 4326)
 
-# Calculate 100% MCP home range size by calendar year for each individual
-# Also calculates first and last days of tracking, tracking period, and # of points
+# Create object of (daily) movement distances
+# Will be combined across datasets to filter home range estimates later on
 
 # The following code calculates the appropriate UTM zone to project your data
 # If data are from multiple sites across UTM zones, run them separately!
 
 utm <- 32600 + (floor((mean(data$Longitude) + 180)/6)) + 1
 sf.df <- st_transform(sf.df, crs = utm)
+
+sf.df %>%
+  arrange(ID, Date) %>%
+  group_by(ID, Date) %>%
+  slice(1) -> move.df
+
+move.df %>%
+  group_by(IDY) %>%
+  mutate(movement = as.numeric(st_distance(geometry, lag(geometry), by_element = T)),
+         days = as.numeric(difftime(Date, lag(Date), units = "days")),
+         daily.movement = movement / days) %>%
+  mutate(Date = format(Date, "%j"),
+         date = (as.numeric(Date) + as.numeric(lag(Date)))/2) %>%
+  as_tibble() %>%
+  select(-geometry) %>%
+  ungroup() -> move.df
+
+write.csv(move.df, 
+          'movement_output.csv',
+          row.names = F)
+
+# Calculate 100% MCP home range size by calendar year for each individual
+# Also calculates first and last days of tracking, tracking period, and # of points
 
 sf.df %>%
   group_by(ID, IDY) %>%
@@ -916,6 +939,7 @@ lapply(seq_along(variograms), function(i){
 })
 
 dev.off()
+
 
 
 
