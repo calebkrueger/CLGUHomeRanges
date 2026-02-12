@@ -384,6 +384,7 @@ wet.crop <- terra::project(query(wetlands, extent = terra::project(lc[[1]], crs(
 wet.rast <- rasterize(wet.crop,
                       disagg(lc[[1]], fact = 3),
                       field = "WETLAND_TYPE")
+wet.rast <- terra::crop(wet.rast, mask.polys, mask = T)
 
 # Remove lakes, rivers/streams, and marine wetlands and deepwater from NWI wetland raster
 
@@ -939,6 +940,7 @@ lapply(seq_along(variograms), function(i){
 })
 
 dev.off()
+
 
 
 
