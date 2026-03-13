@@ -196,14 +196,35 @@ for(i in 1:length(tel.df)){
                                  verbose = T,
                                  cores = 4)
   x <- summary(first.fits[[i]])
-  # Perform parametric bootstrapping for individuals with small Neff
-  if(x[1,3] < 5 & x[1,3] > 2.7){
-    fits[[i]] <- ctmm.boot(tel.df[[i]],
-                           first.fits[[i]][[1]],
-                           error = 0.05,
-                           iterate = T)
+  if(substr(rownames(x)[1],1,2) == "II"){
+    if(substr(rownames(x)[2],1,2) == "II"){
+      if(x[3,3] < 5 & x[3,3] > 2.7){
+        fits[[i]] <- ctmm.boot(tel.df[[i]],
+                               first.fits[[i]][[3]],
+                               error = 0.05,
+                               iterate = T)
+      } else {
+        fits[[i]] <- first.fits[[i]][[3]]
+      }
+    } else {
+      if(x[2,3] < 5 & x[2,3] > 2.7){
+        fits[[i]] <- ctmm.boot(tel.df[[i]],
+                               first.fits[[i]][[2]],
+                               error = 0.05,
+                               iterate = T)
+      } else {
+        fits[[i]] <- first.fits[[i]][[2]]
+      }
+    }
   } else {
-    fits[[i]] <- first.fits[[i]][[1]]
+    if(x[1,3] < 5 & x[1,3] > 2.7){
+      fits[[i]] <- ctmm.boot(tel.df[[i]],
+                             first.fits[[i]][[1]],
+                             error = 0.05,
+                             iterate = T)
+    } else {
+      fits[[i]] <- first.fits[[i]][[1]]
+    }
   }
   out[out$IDY == tel.df[[i]]@info$identity,]$ctmm.mod <- summary(fits[[i]])$name
   # Print and visualize outputs
@@ -226,17 +247,19 @@ out$neff <- NA
 
 for(i in 1:length(tel.df)){
   tmp.fit <- fits[[i]]
-  akdehr[[i]] <- akde(tel.df[[i]],
-                      tmp.fit,
-                      debias = T,
-                      weights = T)
-  plot(tel.df[[i]],
-       UD = akdehr[[i]],
-       main = akdehr[[i]]@info$identity,
-       error = F)
-  out[out$IDY == akdehr[[i]]@info$identity,]$AKDE95 <- as.numeric(summary(akdehr[[i]], units = F)$CI[[2]]) * 0.0001
-  out[out$IDY == akdehr[[i]]@info$identity,]$AKDE50 <- as.numeric(summary(akdehr[[i]], level.UD = 0.5, units = F)$CI[[2]]) * 0.0001
-  out[out$IDY == akdehr[[i]]@info$identity,]$neff <- summary(akdehr[[i]])$DOF[[1]]
+  akdehr[[i]] <- try(akde(tel.df[[i]],
+                          tmp.fit,
+                          debias = T,
+                          weights = T),
+                     silent = T)
+  try(plot(tel.df[[i]],
+           UD = akdehr[[i]],
+           main = akdehr[[i]]@info$identity,
+           error = F),
+      silent = T)
+  try(out[out$IDY == akdehr[[i]]@info$identity,]$AKDE95 <- as.numeric(summary(akdehr[[i]], units = F)$CI[[2]]) * 0.0001, silent = T)
+  try(out[out$IDY == akdehr[[i]]@info$identity,]$AKDE50 <- as.numeric(summary(akdehr[[i]], level.UD = 0.5, units = F)$CI[[2]]) * 0.0001, silent = T)
+  try(out[out$IDY == akdehr[[i]]@info$identity,]$neff <- summary(akdehr[[i]])$DOF[[1]], silent = T)
 }
 
 # Add info on site, sex, SCL, and mass
@@ -488,8 +511,10 @@ sf.df %>%
 # Create object with 95% AKDE polygons
 
 akde.polys <- lapply(seq_along(akdehr), function(i){
-  temp <- st_transform(as.sf(akdehr[[i]], level = 0.95), crs = crs(lc[[1]]))[2,]
+  try(temp <- st_transform(as.sf(akdehr[[i]], level = 0.95), crs = crs(lc[[1]]))[2,], silent = T)
 })
+
+akde.polys <- Filter(is.list, akde.polys)
 
 akde.names <- lapply(seq_along(akde.polys), function(i){
   temp <- sub(" .*$", "", akde.polys[[i]]$name)
@@ -589,7 +614,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
   tmp.sizes <- tmp.wetland.cells[tmp.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
   out[out$IDY==i, "wetland.size1km"] <- tmp.sizes[1,3]
   # Calculate proportion and number of wetland features within home range areas
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::extract(wetland.patches[[yr]], split_low.center.buffer[[i]], exact = T)
     out[out$IDY==i, "pwet.low.center"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
     out[out$IDY==i, "nwet.low.center"] <- length(unique(na.omit(tmp)$patches))
@@ -621,7 +646,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
   tmp <- terra::extract(ag.patches[[yr]], split_hi.buffer[[i]], exact = T)
   out[out$IDY==i, "pag1km"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
   # Calculate proportion developed and cultivated features within home range areas
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::extract(dev.patches[[yr]], split_low.center.buffer[[i]], exact = T)
     out[out$IDY==i, "pdev.low.center"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
     tmp <- terra::extract(dev.patches[[yr]], split_hi.center.buffer[[i]], exact = T)
@@ -647,7 +672,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
   tmp.clump <- lsm_c_clumpy(tmp)
   out[out$IDY==i, "clumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   # Calculate wetland clumpiness index within each home range polygon
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::crop(lc[[yr]], split_low.center.buffer[[i]], touches = T, mask = T, snap = "out")
     tmp.clump <- lsm_c_clumpy(tmp)
     out[out$IDY==i, "clumpy.low.center"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
@@ -668,7 +693,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
 for(i in as.character(unique(low.buffer$IDY))) {
   # Calculate distance from capture point to nearest wetland
   out[out$IDY==i, "NWI.wetland.dist"] <- min(terra::distance(x = vect(split_pts[[i]]),
-                                                             y = as.polygons(nwi.all.wetland.patches)))
+                                                         y = as.polygons(nwi.all.wetland.patches)))
   out[out$IDY==i, "NWI.open.dist"] <- min(terra::distance(x = vect(split_pts[[i]]),
                                                           y = as.polygons(nwi.open.wetland.patches)))
   out[out$IDY==i, "NWI.closed.dist"] <- min(terra::distance(x = vect(split_pts[[i]]),
@@ -720,7 +745,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
   tmp.sizes <- nwi.closed.wetland.cells[nwi.closed.wetland.cells$value %in% unique(tmp$patches),] %>% arrange(-count)
   out[out$IDY==i, "NWI.closed.size1km"] <- tmp.sizes[1,3]
   # Calculate proportion and number of wetland features within home range areas
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::extract(nwi.all.wetland.patches, split_low.center.buffer[[i]], exact = T)
     out[out$IDY==i, "NWI.pwet.low.center"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
     out[out$IDY==i, "NWI.nwet.low.center"] <- length(unique(na.omit(tmp)$patches))
@@ -743,7 +768,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
     out[out$IDY==i, "NWI.wetland.size.akde"] <- tmp.sizes[1,3]
   }
   # Repeat with open canopy wetlands
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::extract(nwi.open.wetland.patches, split_low.center.buffer[[i]], exact = T)
     out[out$IDY==i, "NWI.popen.low.center"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
     out[out$IDY==i, "NWI.nopen.low.center"] <- length(unique(na.omit(tmp)$patches))
@@ -766,7 +791,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
     out[out$IDY==i, "NWI.open.size.akde"] <- tmp.sizes[1,3]
   }
   # Repeat with closed canopy wetlands
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::extract(nwi.closed.wetland.patches, split_low.center.buffer[[i]], exact = T)
     out[out$IDY==i, "NWI.pclosed.low.center"] <- sum(na.omit(tmp)[,3]) / sum(tmp[,3])
     out[out$IDY==i, "NWI.nclosed.low.center"] <- length(unique(na.omit(tmp)$patches))
@@ -810,7 +835,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
   tmp.clump <- lsm_c_clumpy(tmp)
   out[out$IDY==i, "NWI.closedclumpy1km"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   # Calculate wetland clumpiness index within each home range polygon
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::crop(binary.nwi.all, split_low.center.buffer[[i]], touches = T, mask = T, snap = "out")
     tmp.clump <- lsm_c_clumpy(tmp)
     out[out$IDY==i, "NWI.clumpy.low.center"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
@@ -825,7 +850,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
     out[out$IDY==i, "NWI.clumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   }
   # Repeat with open canopy wetlands
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::crop(binary.nwi.open, split_low.center.buffer[[i]], touches = T, mask = T, snap = "out")
     tmp.clump <- lsm_c_clumpy(tmp)
     out[out$IDY==i, "NWI.openclumpy.low.center"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
@@ -840,7 +865,7 @@ for(i in as.character(unique(low.buffer$IDY))) {
     out[out$IDY==i, "NWI.openclumpy.akde"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
   }
   # Repeat with closed canopy wetlands
-  if(out[out$IDY==i, "UniquePoints"] < 3) { } else {
+  if(i %in% names(akde.polys) == FALSE) { } else {
     tmp <- terra::crop(binary.nwi.closed, split_low.center.buffer[[i]], touches = T, mask = T, snap = "out")
     tmp.clump <- lsm_c_clumpy(tmp)
     out[out$IDY==i, "NWI.closedclumpy.low.center"] <- as.numeric(tmp.clump[tmp.clump$class == 1, 6])
@@ -864,7 +889,7 @@ for(i in unique(out$ID)){
     out[out$ID == i, "AKDEcoverage.out"] <- NA
   }else{
     for(j in unique(out[out$ID == i,]$IDY)){
-      if(out[out$IDY == j, "UniquePoints"] < 3){
+      if(j %in% names(akde.polys) == FALSE){
         out[out$IDY == j, "AKDEcoverage.in"] <- NA
         out[out$IDY == j, "AKDEcoverage.out"] <- NA
       }else{
