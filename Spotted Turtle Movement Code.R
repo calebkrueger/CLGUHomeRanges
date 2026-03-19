@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 5-Mar-26
+# Last edited: 17-Mar-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -175,7 +175,8 @@ data %>%
 
 mods <- list()
 first.fits <- list()
-fits <- list()
+akde.fits <- list()
+kde.fits <- list()
 variograms <- list()
 
 out$ctmm.mod <- NA
@@ -196,57 +197,41 @@ for(i in 1:length(tel.df)){
                                  verbose = T,
                                  cores = 4)
   x <- summary(first.fits[[i]])
-  if(substr(rownames(x)[1],1,2) == "II"){
-    if(substr(rownames(x)[2],1,2) == "II"){
-      if(x[3,3] < 5 & x[3,3] > 2.7){
-        fits[[i]] <- ctmm.boot(tel.df[[i]],
-                               first.fits[[i]][[3]],
-                               error = 0.05,
-                               iterate = T)
-      } else {
-        fits[[i]] <- first.fits[[i]][[3]]
-      }
-    } else {
-      if(x[2,3] < 5 & x[2,3] > 2.7){
-        fits[[i]] <- ctmm.boot(tel.df[[i]],
-                               first.fits[[i]][[2]],
-                               error = 0.05,
-                               iterate = T)
-      } else {
-        fits[[i]] <- first.fits[[i]][[2]]
-      }
-    }
-  } else {
-    if(x[1,3] < 5 & x[1,3] > 2.7){
-      fits[[i]] <- ctmm.boot(tel.df[[i]],
-                             first.fits[[i]][[1]],
-                             error = 0.05,
-                             iterate = T)
-    } else {
-      fits[[i]] <- first.fits[[i]][[1]]
-    }
-  }
-  out[out$IDY == tel.df[[i]]@info$identity,]$ctmm.mod <- summary(fits[[i]])$name
+  kde.fits[[i]] <- try(first.fits[[i]][[min(which(substr(rownames(x),1,2) == "II"))]], silent = T)
+  akde.fits[[i]] <- first.fits[[i]][[min(which(substr(rownames(x),1,2) != "II"))]]
+  if(between(x[min(which(substr(rownames(x),1,2) != "II")),3], 2.7, 5)) {
+    akde.fits[[i]] <- ctmm.boot(tel.df[[i]],
+                                first.fits[[i]][[min(which(substr(rownames(x),1,2) != "II"))]],
+                                error = 0.05,
+                                iterate = T)
+  } else {}
+  out[out$IDY == tel.df[[i]]@info$identity,]$ctmm.mod <- summary(akde.fits[[i]])$name
   # Print and visualize outputs
   print(variograms[[i]]@info$identity)
-  print(summary(fits[[i]]))
+  try(print(summary(kde.fits[[i]])), silent = T)
+  print(summary(akde.fits[[i]]))
   plot(variograms[[i]],
-       CTMM = fits[[i]],
+       CTMM = first.fits[[i]][1:3],
        level = c(0.5, 0.95),
        fraction = 1,
-       main = variograms[[i]]@info$identity)
+       main = variograms[[i]]@info$identity,
+       col.CTMM = c("red","blue","black"))
 }
 
 # Calculate wAKDEc home ranges
 # Also output effective sample sizes for downstream filtering
 
 akdehr <- list()
+kdehr <- list()
 out$AKDE95 <- NA
 out$AKDE50 <- NA
 out$neff <- NA
+out$KDE95 <- NA
+out$KDE50 <- NA
+out$kdeneff <- NA
 
 for(i in 1:length(tel.df)){
-  tmp.fit <- fits[[i]]
+  tmp.fit <- akde.fits[[i]]
   akdehr[[i]] <- try(akde(tel.df[[i]],
                           tmp.fit,
                           debias = T,
@@ -260,13 +245,27 @@ for(i in 1:length(tel.df)){
   try(out[out$IDY == akdehr[[i]]@info$identity,]$AKDE95 <- as.numeric(summary(akdehr[[i]], units = F)$CI[[2]]) * 0.0001, silent = T)
   try(out[out$IDY == akdehr[[i]]@info$identity,]$AKDE50 <- as.numeric(summary(akdehr[[i]], level.UD = 0.5, units = F)$CI[[2]]) * 0.0001, silent = T)
   try(out[out$IDY == akdehr[[i]]@info$identity,]$neff <- summary(akdehr[[i]])$DOF[[1]], silent = T)
+  tmp.fit <- kde.fits[[i]]
+  kdehr[[i]] <- try(akde(tel.df[[i]],
+                         tmp.fit,
+                         debias = T,
+                         weights = T),
+                    silent = T)
+  try(plot(tel.df[[i]],
+           UD = kdehr[[i]],
+           main = kdehr[[i]]@info$identity,
+           error = F),
+      silent = T)
+  try(out[out$IDY == kdehr[[i]]@info$identity,]$KDE95 <- as.numeric(summary(kdehr[[i]], units = F)$CI[[2]]) * 0.0001, silent = T)
+  try(out[out$IDY == kdehr[[i]]@info$identity,]$KDE50 <- as.numeric(summary(kdehr[[i]], level.UD = 0.5, units = F)$CI[[2]]) * 0.0001, silent = T)
+  try(out[out$IDY == kdehr[[i]]@info$identity,]$kdeneff <- summary(kdehr[[i]])$DOF[[1]], silent = T)
 }
 
 # Add info on site, sex, SCL, and mass
 # Pulled from 'Extra Info.csv' file with columns:
 # ID, Site, Year, Sex, SCL, and Mass
 
-extra_info <- read.csv("./Extra Info.csv")
+extra_info <- read.csv("./Data/WV Oxenrider Extra Info.csv")
 extra_info$ID <- as.factor(extra_info$ID)
 extra_info$IDY <- interaction(extra_info$ID, 
                               extra_info$Year,
@@ -449,23 +448,23 @@ binary.nwi.closed <- classify(binary.nwi.closed, cbind(NA, 0))
 
 # Start by creating buffered activity centers
 
-lapply(seq_along(fits), function(i){
-  st_as_sf(as.data.frame(fits[[i]]$mu),
+lapply(seq_along(akde.fits), function(i){
+  st_as_sf(as.data.frame(akde.fits[[i]]$mu),
            coords = c("x","y"),
            crs = utm) %>%
     st_transform(crs = crs(lc[[1]])) %>%
     st_buffer(dist = set_units(200, "m")) %>%
-    mutate(IDY = fits[[i]]@info$identity)
+    mutate(IDY = akde.fits[[i]]@info$identity)
 }) %>%
   bind_rows() -> low.center.buffer
 
-lapply(seq_along(fits), function(i){
-  st_as_sf(as.data.frame(fits[[i]]$mu),
+lapply(seq_along(akde.fits), function(i){
+  st_as_sf(as.data.frame(akde.fits[[i]]$mu),
            coords = c("x","y"),
            crs = utm) %>%
     st_transform(crs = crs(lc[[1]])) %>%
     st_buffer(dist = set_units(1000, "m")) %>%
-    mutate(IDY = fits[[i]]@info$identity)
+    mutate(IDY = akde.fits[[i]]@info$identity)
 }) %>%
   bind_rows() -> hi.center.buffer
 
@@ -902,6 +901,60 @@ for(i in unique(out$ID)){
   }
 }
 
+# Repeat with KDE estimates
+
+kde.polys <- lapply(seq_along(kdehr), function(i){
+  try(temp <- st_transform(as.sf(kdehr[[i]], level = 0.95), crs = crs(lc[[1]]))[2,], silent = T)
+})
+kde.polys <- Filter(is.list, kde.polys)
+kde.names <- lapply(seq_along(kde.polys), function(i){
+  temp <- sub(" .*$", "", kde.polys[[i]]$name)
+})
+names(kde.polys) <- kde.names
+
+for(i in unique(out$ID)){
+  if(nrow(out[out$ID == i,]) < 2){
+    out[out$ID == i, "KDEcoverage.in"] <- NA
+    out[out$ID == i, "KDEcoverage.out"] <- NA
+  }else{
+    for(j in unique(out[out$ID == i,]$IDY)){
+      if(j %in% names(kde.polys) == FALSE){
+        out[out$IDY == j, "KDEcoverage.in"] <- NA
+        out[out$IDY == j, "KDEcoverage.out"] <- NA
+      }else{
+        tmp.df <- sf.df[sf.df$ID == i & sf.df$IDY != j,]
+        tmp <- st_intersects(tmp.df, kde.polys[[j]], sparse = F)
+        out[out$IDY == j, "KDEcoverage.in"] <- sum(tmp)
+        out[out$IDY == j, "KDEcoverage.out"] <- nrow(tmp.df) - sum(tmp)
+      }
+    }
+  }
+}
+
+# Repeat with 95% MCPs
+
+mcps <- st_transform(st_as_sf(mcp(ade.df, percent = 95)),
+                     crs = crs(lc[[1]]))
+
+for(i in unique(out$ID)){
+  if(nrow(out[out$ID == i,]) < 2){
+    out[out$ID == i, "MCPcoverage.in"] <- NA
+    out[out$ID == i, "MCPcoverage.out"] <- NA
+  }else{
+    for(j in unique(out[out$ID == i,]$IDY)){
+      if(j %in% mcps$id == FALSE){
+        out[out$IDY == j, "MCPcoverage.in"] <- NA
+        out[out$IDY == j, "MCPcoverage.out"] <- NA
+      }else{
+        tmp.df <- sf.df[sf.df$ID == i & sf.df$IDY != j,]
+        tmp <- st_intersects(tmp.df, mcps[mcps$id == j,], sparse = F)
+        out[out$IDY == j, "MCPcoverage.in"] <- sum(tmp)
+        out[out$IDY == j, "MCPcoverage.out"] <- nrow(tmp.df) - sum(tmp)
+      }
+    }
+  }
+}
+
 ######################################################################
 
 ## STEP THREE: CALCULATE PRECIPITATION AND TEMPERATURE METRICS ##
@@ -1000,7 +1053,7 @@ pdf("variograms.pdf")
 par(mfrow = c(3,2))
 lapply(seq_along(variograms), function(i){
   plot(variograms[[i]],
-       CTMM = fits[[i]],
+       CTMM = akde.fits[[i]],
        level = c(0.5, 0.95),
        fraction = 1,
        main = variograms[[i]]@info$identity)
