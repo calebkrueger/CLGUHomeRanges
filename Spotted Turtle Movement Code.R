@@ -993,15 +993,15 @@ climate.df$WY <- ifelse(climate.df$Month %in% c("10","11","12"),
                         as.numeric(climate.df$Year) + 1,
                         as.numeric(climate.df$Year))
 
-climate.df <- climate.df[climate.df$WY <= 2024,]
+wy.df <- climate.df[climate.df$WY <= 2024,]
 
-climate.df %>%
+wy.df %>%
   group_by(Site, WY) %>%
   summarize(Precip = sum(Precip, na.rm = T)) %>%
   group_by(Site) %>%
   summarize(Av.Precip = mean(Precip, na.rm = T)) -> WY.av
 
-climate.df %>%
+wy.df %>%
   group_by(Site, WY) %>%
   summarize(Year = min(WY),
             WY.Precip = sum(Precip, na.rm = T)) %>%
