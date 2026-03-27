@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 17-Mar-26
+# Last edited: 27-Mar-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -265,7 +265,7 @@ for(i in 1:length(tel.df)){
 # Pulled from 'Extra Info.csv' file with columns:
 # ID, Site, Year, Sex, SCL, and Mass
 
-extra_info <- read.csv("./Data/WV Oxenrider Extra Info.csv")
+extra_info <- read.csv("./Extra Info.csv")
 extra_info$ID <- as.factor(extra_info$ID)
 extra_info$IDY <- interaction(extra_info$ID, 
                               extra_info$Year,
