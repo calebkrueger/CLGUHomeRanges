@@ -1,6 +1,6 @@
 # Code to calculate home ranges, displacement, and relevant covariates
 # Written by C. J. Krueger
-# Last edited: 27-Mar-26
+# Last edited: 6-May-26
 
 ### Check that your telemetry data contain the following named columns:
 ### ID  
@@ -972,7 +972,7 @@ data %>%
 
 clim.df <- download_daymet_batch(file_location = 'coords.csv',
                                  start = 1980,
-                                 end = 2024)
+                                 end = 2025)
 
 lapply(clim.df,
        function(x) {
@@ -993,7 +993,7 @@ climate.df$WY <- ifelse(climate.df$Month %in% c("10","11","12"),
                         as.numeric(climate.df$Year) + 1,
                         as.numeric(climate.df$Year))
 
-wy.df <- climate.df[climate.df$WY <= 2024,]
+wy.df <- climate.df[climate.df$WY <= 2025,]
 
 wy.df %>%
   group_by(Site, WY) %>%
